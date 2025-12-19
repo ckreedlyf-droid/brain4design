@@ -57,6 +57,65 @@ type GenErr = {
 function isErr<T extends { ok: boolean }>(x: T): x is Extract<T, { ok: false }> {
   return x.ok === false;
 }
+function ToggleRow(props: {
+  title: string;
+  desc?: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  const { title, desc, checked, onChange } = props;
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        gap: 16,
+        padding: 14,
+        borderRadius: 14,
+        border: "1px solid rgba(255,255,255,0.10)",
+        background: "rgba(255,255,255,0.04)",
+        alignItems: "center",
+      }}
+    >
+      <div>
+        <div style={{ fontWeight: 800 }}>{title}</div>
+        {desc ? (
+          <div style={{ opacity: 0.8, fontSize: 13, marginTop: 4 }}>{desc}</div>
+        ) : null}
+      </div>
+
+      <button
+        type="button"
+        onClick={() => onChange(!checked)}
+        style={{
+          width: 56,
+          height: 32,
+          borderRadius: 999,
+          border: "1px solid rgba(255,255,255,0.14)",
+          background: checked ? "rgba(99,102,241,0.85)" : "rgba(255,255,255,0.08)",
+          position: "relative",
+          cursor: "pointer",
+          flexShrink: 0,
+        }}
+        aria-pressed={checked}
+      >
+        <span
+          style={{
+            position: "absolute",
+            top: 4,
+            left: checked ? 28 : 4,
+            width: 24,
+            height: 24,
+            borderRadius: 999,
+            background: "rgba(255,255,255,0.92)",
+            transition: "left 160ms ease",
+          }}
+        />
+      </button>
+    </div>
+  );
+}
 
 export default function Home() {
   // ---- brief form state
@@ -420,12 +479,13 @@ export default function Home() {
 
             <div style={{ fontWeight: 900, marginBottom: 8 }}>2) Content</div>
 
-            <toggleRow
-              title="Surprise me with the best headline/subhead/CTA"
-              desc="When ON, the designer brain will refine your copy before generating."
-              checked={surpriseCopy}
-              onChange={setSurpriseCopy}
-            />
+            <ToggleRow
+  title="Surprise me with the best headline/subhead/CTA"
+  desc="When ON, the designer brain will refine your copy before generating."
+  checked={surpriseCopy}
+  onChange={setSurpriseCopy}
+/>
+
 
             <label style={labelStyle}>Headline</label>
             <input value={headline} onChange={(e) => setHeadline(e.target.value)} style={inputStyle} placeholder="Optional" />
