@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ---- super-simple in-memory limiter (OK for hobby/testing; resets on cold starts)
+// ---- in-memory limiter (hobby/testing; resets on cold starts)
 const briefCounts = new Map<string, { date: string; count: number }>();
 
 type DesignType = "flyer" | "newsletter";
@@ -21,9 +21,7 @@ function getIP(req: Request) {
 
 function todayKey() {
   const d = new Date();
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
-    d.getUTCDate()
-  ).padStart(2, "0")}`;
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
 function takeDailyToken(ip: string, limit: number) {
@@ -52,44 +50,72 @@ function clampString(s: any, maxLen: number) {
   if (typeof s !== "string") return "";
   return s.slice(0, maxLen);
 }
-
 function normStr(v: any) {
   if (typeof v !== "string") return "";
   return v.trim();
 }
-
-// Accepts "Flyer" / "flyer" / "FLYER"
 function normalizeDesignType(v: any): DesignType | null {
   const s = normStr(v).toLowerCase();
   if (s === "flyer") return "flyer";
   if (s === "newsletter") return "newsletter";
   return null;
 }
-
-// Accepts "Single" / "single" / "Bi-fold" / "bifold" / "tri fold" etc.
 function normalizeFlyerFold(v: any): FlyerFold | null {
   const s0 = normStr(v).toLowerCase();
   if (!s0) return null;
-
-  // remove spaces and hyphens for flexible matching
   const s = s0.replace(/[\s-]/g, "");
-
   if (s === "single") return "single";
-  if (s === "bifold" || s === "bifolder") return "bifold"; // (extra tolerant)
+  if (s === "bifold") return "bifold";
   if (s === "trifold") return "trifold";
   return null;
 }
-
 function normalizeAudience(v: any): Audience {
   const s = normStr(v).toLowerCase();
   if (s === "buyer" || s === "seller" || s === "realtor" || s === "all") return s;
   return "buyer";
 }
-
 function normalizeDensity(v: any): Density {
   const s = normStr(v).toLowerCase();
   if (s === "minimal" || s === "balanced" || s === "dense") return s;
   return "balanced";
+}
+
+function daysUntilMonthDay(now: Date, monthIndex0: number, day: number) {
+  // monthIndex0: 0=Jan ... 11=Dec
+  const y = now.getFullYear();
+  const targetThisYear = new Date(y, monthIndex0, day, 0, 0, 0, 0);
+  const target = targetThisYear >= now ? targetThisYear : new Date(y + 1, monthIndex0, day, 0, 0, 0, 0);
+  const ms = target.getTime() - now.getTime();
+  return Math.max(0, Math.round(ms / (1000 * 60 * 60 * 24)));
+}
+
+function seasonalContext(now: Date) {
+  const month = now.getMonth(); // 0-11
+  const day = now.getDate();
+  const iso = now.toISOString();
+
+  const daysToChristmas = daysUntilMonthDay(now, 11, 25);
+  const daysToNewYear = daysUntilMonthDay(now, 0, 1);
+
+  // Simple seasonal buckets (good enough for design suggestions)
+  let seasonLabel = "General";
+  if (month === 11) seasonLabel = "Holiday Season (December)";
+  else if (month === 0) seasonLabel = "New Year / Fresh Start (January)";
+  else if (month >= 5 && month <= 7) seasonLabel = "Summer (June–August)";
+  else if (month >= 8 && month <= 10) seasonLabel = "Fall (September–November)";
+  else if (month >= 1 && month <= 4) seasonLabel = "Spring (February–May)";
+
+  const holidayHints: string[] = [];
+  if (month === 11 && day <= 25) {
+    holidayHints.push(`It is ${daysToChristmas} day(s) before Christmas.`);
+    holidayHints.push("Holiday attention span is short. Make the CTA extremely obvious.");
+  }
+  if (daysToNewYear <= 14) {
+    holidayHints.push(`New Year is coming in ${daysToNewYear} day(s).`);
+    holidayHints.push("‘Fresh start’ messaging can outperform generic promos.");
+  }
+
+  return { iso, seasonLabel, holidayHints, daysToChristmas, daysToNewYear };
 }
 
 export async function POST(req: Request) {
@@ -107,8 +133,11 @@ export async function POST(req: Request) {
 
     const body = await req.json();
 
-    // ---- Minimal validation + normalization
-    // Accept UI sending "Flyer"/"Newsletter" OR "flyer"/"newsletter"
+    // Modes:
+    // - "brief": full brief (default)
+    // - "copy": only refine copy + theme suggestions (cheap + fast)
+    const mode: "brief" | "copy" = body?.mode === "copy" ? "copy" : "brief";
+
     const designType = normalizeDesignType(body?.designType);
     if (!designType) {
       return Response.json(
@@ -124,75 +153,62 @@ export async function POST(req: Request) {
 
     const width = Number(body?.renderSize?.width);
     const height = Number(body?.renderSize?.height);
-    if (
-      !Number.isFinite(width) ||
-      !Number.isFinite(height) ||
-      width < 256 ||
-      height < 256 ||
-      width > 2048 ||
-      height > 2048
-    ) {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width < 256 || height < 256 || width > 2048 || height > 2048) {
       return Response.json({ ok: false, error: "Invalid renderSize.", remainingToday: gate.remaining }, { status: 400 });
     }
 
     const location = clampString(body?.location || "Sacramento, CA", 80);
     const audience = normalizeAudience(body?.audience);
 
-    // Accept flyerFold from UI in many forms
-    const flyerFold =
-      designType === "flyer" ? normalizeFlyerFold(body?.flyerFold) ?? undefined : undefined;
+    const flyerFold = designType === "flyer" ? normalizeFlyerFold(body?.flyerFold) ?? undefined : undefined;
 
-    // IMPORTANT:
-    // Your UI payload is likely:
-    //   surpriseCopy (top-level)
-    //   copy: { headline, subhead, cta, dateTime, keyPoints }
-    //   surpriseDesign (top-level)
-    //   designDirection: { tone, density, brandWords, paletteHint }
-    //
-    // But your old API expected:
-    //   content: {...} and direction: {...}
-    //
-    // So we read BOTH shapes safely:
+    // Read BOTH payload shapes (your UI + older API)
     const surpriseCopy = Boolean(body?.surpriseCopy ?? body?.content?.surpriseCopy);
     const surpriseDesign = Boolean(body?.surpriseDesign ?? body?.direction?.surpriseDesign);
 
     const copySrc = body?.copy ?? body?.content ?? {};
-    const headline = clampString(copySrc?.headline || "", 120);
-    const subhead = clampString(copySrc?.subhead || "", 180);
-    const cta = clampString(copySrc?.cta || "", 90);
+    const headline = clampString(copySrc?.headline || "", 140);
+    const subhead = clampString(copySrc?.subhead || "", 200);
+    const cta = clampString(copySrc?.cta || "", 100);
+    const dateTime = clampString(copySrc?.dateTime || "", 80);
 
     const keyPointsRaw = copySrc?.keyPoints;
     const keyPoints: string[] = Array.isArray(keyPointsRaw)
-      ? keyPointsRaw.map((x: any) => clampString(x, 90)).filter(Boolean).slice(0, 5)
+      ? keyPointsRaw.map((x: any) => clampString(x, 100)).filter(Boolean).slice(0, 6)
       : [];
 
     const dirSrc = body?.designDirection ?? body?.direction ?? {};
-    const tone = clampString(dirSrc?.tone || "Bold Modern", 40);
+    const tone = clampString(dirSrc?.tone || "Bold Modern", 50);
     const density = normalizeDensity(dirSrc?.density);
-    const brandWords = clampString(dirSrc?.brandWords || "", 120);
-    const paletteHint = clampString(dirSrc?.paletteHint || "", 120);
-    const imageryHint = clampString(dirSrc?.imageryHint || "", 140);
+    const brandWords = clampString(dirSrc?.brandWords || "", 140);
+    const paletteHint = clampString(dirSrc?.paletteHint || "", 160);
+    const imageryHint = clampString(dirSrc?.imageryHint || "", 180);
 
-    console.log(
-      "[/api/brief] ip=",
-      ip,
-      "designType=",
-      designType,
-      "audience=",
-      audience,
-      "size=",
-      `${width}x${height}`,
-      "remainingToday=",
-      gate.remaining
-    );
+    const now = new Date();
+    const ctx = seasonalContext(now);
+
+    console.log("[/api/brief] ip=", ip, "mode=", mode, "designType=", designType, "audience=", audience, "size=", `${width}x${height}`, "remainingToday=", gate.remaining);
 
     const system = `
-You are a highly-paid senior graphic designer specialized in flyers and newsletters.
-You surprise the user with smart choices while staying practical and printable.
+You are the highest-paid senior graphic designer + creative director.
+Your output must be extremely readable to a human editor who will actually build the design.
 Return VALID JSON ONLY. No markdown. No code fences.
+
+BIG GOAL:
+- Give practical instructions that a designer/editor can execute immediately.
+- Write like: "Do this", "Avoid this", "If X then Y".
+- Assume time is limited. Make decisions confidently.
+
+You must be context-aware:
+- Consider today's date and proximity to holidays/season.
+- Give theme suggestions as "Take it or leave it".
+
+Never use em-dashes.
 
 OUTPUT SHAPE (must include all keys):
 {
+  "mode": "brief" | "copy",
+
   "designType": "flyer"|"newsletter",
   "flyerFold": "single"|"bifold"|"trifold"|null,
   "format": string,
@@ -200,52 +216,76 @@ OUTPUT SHAPE (must include all keys):
   "location": string,
   "audience": "buyer"|"seller"|"realtor"|"all",
 
-  "headline": string,
-  "subhead": string,
-  "cta": string,
-  "keyPoints": string[],
+  "theme": {
+    "seasonContext": string,
+    "holidayReasoning": string[],
+    "takeItOrLeaveItSuggestions": string[]
+  },
 
-  "tone": string,
-  "palette": string,
-  "imageryStyle": string,
+  "copy": {
+    "headline": string,
+    "subhead": string,
+    "cta": string,
+    "dateTime": string,
+    "keyPoints": string[]
+  },
 
-  "imagePrompt": string,
+  "design": {
+    "tone": string,
+    "density": "minimal"|"balanced"|"dense",
+    "palette": string,
+    "imageryStyle": string,
+    "layoutStyle": string
+  },
+
+  "prompt": string,
 
   "designerNotes": {
-    "concept": string,
+    "quickSummary": string,
+    "doThis": string[],
+    "avoidThis": string[],
     "hierarchy": string[],
+    "spacingAndGrid": string[],
     "typography": string[],
     "colorLogic": string[],
-    "layoutChoices": string[],
-    "improvements": string[]
+    "imagery": string[],
+    "foldAndPrintNotes": string[],
+    "exportChecklist": string[]
   },
 
   "promptTransparency": {
     "whatTheModelOptimizedFor": string[],
-    "whyThisWorks": string[]
+    "whyThisWorks": string[],
+    "risksAndTradeoffs": string[]
   }
 }
 
 RULES:
-- Location defaults to Sacramento, CA.
-- Audience is buyer/seller/realtor/all.
-- If surpriseCopy is true, rewrite headline/subhead/cta to be stronger for that audience in that location.
-- If surpriseDesign is true, choose palette + imageryStyle + layout logic like a pro.
-- Avoid tiny text; optimize for mobile scan + print clarity.
-- No em-dashes.
-- Keep copy scannable: strong headline, 1-line subhead, 1 clear CTA, 3-5 key points max.
-- For flyer folds: mention fold-safe margins in layout notes.
-- imagePrompt must be directly usable in an image generator.
+- If mode == "copy": focus on theme + copy + brief notes. Keep prompt + design fields present but simpler.
+- If surpriseCopy is true, rewrite the copy strongly for the audience/location and season.
+- If surpriseCopy is false, keep user's copy, only lightly clean it (grammar + clarity).
+- If surpriseDesign is true, pick palette/imagery/layout like a pro.
+- If surpriseDesign is false, honor paletteHint/imageryHint and keep notes shorter.
+- Optimize for mobile scan and print clarity (no tiny text).
+- Key points: 3–6 max, scannable.
+- For folds: mention safe margins and fold lines.
+- prompt must be directly usable for an image generator (describe layout, typography vibe, spacing, color, imagery, no faces unless necessary).
 `;
 
     const userPayload = {
+      mode,
+      todayISO: ctx.iso,
+      seasonContext: ctx.seasonLabel,
+      holidayHints: ctx.holidayHints,
+
       designType,
       flyerFold: flyerFold ?? null,
       format,
       renderSize: { width, height },
       location,
       audience,
-      content: { surpriseCopy, headline, subhead, cta, keyPoints },
+
+      content: { surpriseCopy, headline, subhead, cta, dateTime, keyPoints },
       direction: { surpriseDesign, tone, density, brandWords, paletteHint, imageryHint },
     };
 
@@ -261,6 +301,9 @@ RULES:
 
     const text = completion.choices?.[0]?.message?.content || "";
     const brief = safeJsonParse(text);
+
+    // Hard-compat: ensure prompt exists even if model returned "imagePrompt"
+    if (!brief.prompt && brief.imagePrompt) brief.prompt = brief.imagePrompt;
 
     brief.alternativeGenerators = [
       { name: "Microsoft Designer (Image Creator)", url: "https://designer.microsoft.com/", note: "Often free with Microsoft account." },
