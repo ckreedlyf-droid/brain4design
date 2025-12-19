@@ -107,6 +107,33 @@ export async function POST(req: Request) {
     }
 
     const size = normalizeSize(body?.size);
+// Allowed image sizes for gpt-image-1 (per SDK typing)
+type ImageSize =
+  | "auto"
+  | "1024x1536"
+  | "1024x1024"
+  | "1536x1024"
+  | "256x256"
+  | "512x512"
+  | "1792x1024"
+  | "1024x1792";
+
+function coerceImageSize(input: any): ImageSize {
+  const s = String(input || "").trim();
+
+  const allowed: ImageSize[] = [
+    "auto",
+    "1024x1536",
+    "1024x1024",
+    "1536x1024",
+    "256x256",
+    "512x512",
+    "1792x1024",
+    "1024x1792",
+  ];
+
+  return (allowed as string[]).includes(s) ? (s as ImageSize) : "1024x1536";
+}
 
     // 3) Call image model
     const result = await client.images.generate({
