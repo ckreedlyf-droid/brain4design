@@ -53,8 +53,43 @@ function clampString(s: any, maxLen: number) {
   return s.slice(0, maxLen);
 }
 
-function isOneOf<T extends string>(v: any, allowed: readonly T[]): v is T {
-  return typeof v === "string" && (allowed as readonly string[]).includes(v);
+function normStr(v: any) {
+  if (typeof v !== "string") return "";
+  return v.trim();
+}
+
+// Accepts "Flyer" / "flyer" / "FLYER"
+function normalizeDesignType(v: any): DesignType | null {
+  const s = normStr(v).toLowerCase();
+  if (s === "flyer") return "flyer";
+  if (s === "newsletter") return "newsletter";
+  return null;
+}
+
+// Accepts "Single" / "single" / "Bi-fold" / "bifold" / "tri fold" etc.
+function normalizeFlyerFold(v: any): FlyerFold | null {
+  const s0 = normStr(v).toLowerCase();
+  if (!s0) return null;
+
+  // remove spaces and hyphens for flexible matching
+  const s = s0.replace(/[\s-]/g, "");
+
+  if (s === "single") return "single";
+  if (s === "bifold" || s === "bifolder") return "bifold"; // (extra tolerant)
+  if (s === "trifold") return "trifold";
+  return null;
+}
+
+function normalizeAudience(v: any): Audience {
+  const s = normStr(v).toLowerCase();
+  if (s === "buyer" || s === "seller" || s === "realtor" || s === "all") return s;
+  return "buyer";
+}
+
+function normalizeDensity(v: any): Density {
+  const s = normStr(v).toLowerCase();
+  if (s === "minimal" || s === "balanced" || s === "dense") return s;
+  return "balanced";
 }
 
 export async function POST(req: Request) {
@@ -65,7 +100,7 @@ export async function POST(req: Request) {
 
     if (!gate.ok) {
       return Response.json(
-        { ok: false, error: "Daily brief limit reached (10/day). Try again tomorrow." },
+        { ok: false, error: "Daily brief limit reached (10/day). Try again tomorrow.", remainingToday: 0 },
         { status: 429 }
       );
     }
@@ -73,61 +108,83 @@ export async function POST(req: Request) {
     const body = await req.json();
 
     // ---- Minimal validation + normalization
-    const designTypeRaw = body?.designType;
-    const formatRaw = body?.format;
-    const renderSize = body?.renderSize;
-    const location = clampString(body?.location || "Sacramento, CA", 80);
-    const audienceRaw = body?.audience || "buyer";
-
-    const allowedDesignTypes = ["flyer", "newsletter"] as const;
-    const allowedFolds = ["single", "bifold", "trifold"] as const;
-    const allowedAudience = ["buyer", "seller", "realtor", "all"] as const;
-    const allowedDensity = ["minimal", "balanced", "dense"] as const;
-
-    if (!isOneOf(designTypeRaw, allowedDesignTypes)) {
-      return Response.json({ ok: false, error: "Invalid designType." }, { status: 400 });
+    // Accept UI sending "Flyer"/"Newsletter" OR "flyer"/"newsletter"
+    const designType = normalizeDesignType(body?.designType);
+    if (!designType) {
+      return Response.json(
+        { ok: false, error: "Invalid designType. Use flyer/newsletter (or Flyer/Newsletter).", remainingToday: gate.remaining },
+        { status: 400 }
+      );
     }
-    const designType: DesignType = designTypeRaw;
 
-    const format = clampString(formatRaw, 40);
+    const format = clampString(body?.format, 40);
     if (!format) {
-      return Response.json({ ok: false, error: "Missing format." }, { status: 400 });
+      return Response.json({ ok: false, error: "Missing format.", remainingToday: gate.remaining }, { status: 400 });
     }
 
-    const width = Number(renderSize?.width);
-    const height = Number(renderSize?.height);
-    if (!Number.isFinite(width) || !Number.isFinite(height) || width < 256 || height < 256 || width > 2048 || height > 2048) {
-      return Response.json({ ok: false, error: "Invalid renderSize." }, { status: 400 });
+    const width = Number(body?.renderSize?.width);
+    const height = Number(body?.renderSize?.height);
+    if (
+      !Number.isFinite(width) ||
+      !Number.isFinite(height) ||
+      width < 256 ||
+      height < 256 ||
+      width > 2048 ||
+      height > 2048
+    ) {
+      return Response.json({ ok: false, error: "Invalid renderSize.", remainingToday: gate.remaining }, { status: 400 });
     }
 
-    const audience: Audience = isOneOf(audienceRaw, allowedAudience) ? audienceRaw : "buyer";
+    const location = clampString(body?.location || "Sacramento, CA", 80);
+    const audience = normalizeAudience(body?.audience);
 
-    // Optional inputs (capped)
-    const flyerFold: FlyerFold | undefined =
-      designType === "flyer" && isOneOf(body?.flyerFold, allowedFolds) ? body.flyerFold : undefined;
+    // Accept flyerFold from UI in many forms
+    const flyerFold =
+      designType === "flyer" ? normalizeFlyerFold(body?.flyerFold) ?? undefined : undefined;
 
-    const surpriseCopy = Boolean(body?.content?.surpriseCopy);
-    const surpriseDesign = Boolean(body?.direction?.surpriseDesign);
+    // IMPORTANT:
+    // Your UI payload is likely:
+    //   surpriseCopy (top-level)
+    //   copy: { headline, subhead, cta, dateTime, keyPoints }
+    //   surpriseDesign (top-level)
+    //   designDirection: { tone, density, brandWords, paletteHint }
+    //
+    // But your old API expected:
+    //   content: {...} and direction: {...}
+    //
+    // So we read BOTH shapes safely:
+    const surpriseCopy = Boolean(body?.surpriseCopy ?? body?.content?.surpriseCopy);
+    const surpriseDesign = Boolean(body?.surpriseDesign ?? body?.direction?.surpriseDesign);
 
-    const headline = clampString(body?.content?.headline || "", 120);
-    const subhead = clampString(body?.content?.subhead || "", 180);
-    const cta = clampString(body?.content?.cta || "", 90);
+    const copySrc = body?.copy ?? body?.content ?? {};
+    const headline = clampString(copySrc?.headline || "", 120);
+    const subhead = clampString(copySrc?.subhead || "", 180);
+    const cta = clampString(copySrc?.cta || "", 90);
 
-    const keyPoints: string[] = Array.isArray(body?.content?.keyPoints)
-      ? body.content.keyPoints
-          .map((x: any) => clampString(x, 90))
-          .filter(Boolean)
-          .slice(0, 5)
+    const keyPointsRaw = copySrc?.keyPoints;
+    const keyPoints: string[] = Array.isArray(keyPointsRaw)
+      ? keyPointsRaw.map((x: any) => clampString(x, 90)).filter(Boolean).slice(0, 5)
       : [];
 
-    const tone = clampString(body?.direction?.tone || "Bold Modern", 40);
-    const density: Density = isOneOf(body?.direction?.density, allowedDensity) ? body.direction.density : "balanced";
-    const brandWords = clampString(body?.direction?.brandWords || "", 120);
-    const paletteHint = clampString(body?.direction?.paletteHint || "", 120);
-    const imageryHint = clampString(body?.direction?.imageryHint || "", 140);
+    const dirSrc = body?.designDirection ?? body?.direction ?? {};
+    const tone = clampString(dirSrc?.tone || "Bold Modern", 40);
+    const density = normalizeDensity(dirSrc?.density);
+    const brandWords = clampString(dirSrc?.brandWords || "", 120);
+    const paletteHint = clampString(dirSrc?.paletteHint || "", 120);
+    const imageryHint = clampString(dirSrc?.imageryHint || "", 140);
 
-    // ---- Logging for auditing spend
-    console.log("[/api/brief] ip=", ip, "designType=", designType, "audience=", audience, "size=", `${width}x${height}`, "remainingToday=", gate.remaining);
+    console.log(
+      "[/api/brief] ip=",
+      ip,
+      "designType=",
+      designType,
+      "audience=",
+      audience,
+      "size=",
+      `${width}x${height}`,
+      "remainingToday=",
+      gate.remaining
+    );
 
     const system = `
 You are a highly-paid senior graphic designer specialized in flyers and newsletters.
@@ -205,28 +262,11 @@ RULES:
     const text = completion.choices?.[0]?.message?.content || "";
     const brief = safeJsonParse(text);
 
-    // Ensure helpful “other tools” links are included (so users can reuse prompt elsewhere)
     brief.alternativeGenerators = [
-      {
-        name: "Microsoft Designer (Image Creator)",
-        url: "https://designer.microsoft.com/",
-        note: "Often free with Microsoft account.",
-      },
-      {
-        name: "Adobe Firefly",
-        url: "https://firefly.adobe.com/",
-        note: "Has free credits depending on plan/account.",
-      },
-      {
-        name: "Canva AI Image Generator",
-        url: "https://www.canva.com/",
-        note: "Magic Media / AI tools available depending on plan.",
-      },
-      {
-        name: "Leonardo AI",
-        url: "https://leonardo.ai/",
-        note: "Has free tier options depending on account.",
-      },
+      { name: "Microsoft Designer (Image Creator)", url: "https://designer.microsoft.com/", note: "Often free with Microsoft account." },
+      { name: "Adobe Firefly", url: "https://firefly.adobe.com/", note: "Has free credits depending on plan/account." },
+      { name: "Canva AI Image Generator", url: "https://www.canva.com/", note: "Magic Media / AI tools available depending on plan." },
+      { name: "Leonardo AI", url: "https://leonardo.ai/", note: "Has free tier options depending on account." },
     ];
 
     return Response.json({
