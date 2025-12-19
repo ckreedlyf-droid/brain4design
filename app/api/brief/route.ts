@@ -3,111 +3,138 @@ import OpenAI from "openai";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type DesignType = "flyer" | "newsletter";
-type FlyerFold = "single" | "bifold" | "trifold";
-type Aspect = "a4" | "ig_story" | "ig_post" | "email_header" | "linkedin_banner";
-type Tone =
-  | "premium_minimal"
-  | "bold_modern"
-  | "clean_corporate"
-  | "warm_human"
-  | "playful"
-  | "luxury_editorial";
-type Density = "airy" | "balanced" | "packed";
-type Audience = "buyer" | "seller" | "realtor" | "all";
+const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// ---- super-simple in-memory limiter (OK for hobby/testing; resets on cold starts)
+const briefCounts = new Map<string, { date: string; count: number }>();
+
+function getIP(req: Request) {
+  // Vercel: x-forwarded-for is usually present
+  const xf = req.headers.get("x-forwarded-for");
+  if (xf) return xf.split(",")[0].trim();
+  return "unknown";
+}
+
+function todayKey() {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
+function takeDailyToken(ip: string, limit: number) {
+  const date = todayKey();
+  const cur = briefCounts.get(ip);
+  if (!cur || cur.date !== date) {
+    briefCounts.set(ip, { date, count: 1 });
+    return { ok: true, remaining: limit - 1 };
+  }
+  if (cur.count >= limit) return { ok: false, remaining: 0 };
+  cur.count += 1;
+  briefCounts.set(ip, cur);
+  return { ok: true, remaining: limit - cur.count };
+}
+
+function safeJsonParse(text: string) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Attempt to recover if model wrapped in code fences
+    const cleaned = text.replace(/```json|```/g, "").trim();
+    return JSON.parse(cleaned);
+  }
+}
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
-
-    const client = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
-
-    const systemPrompt = `
-You are a highly paid senior graphic designer and creative director.
-You design flyers and newsletters that are clean, conversion-focused, and visually surprising.
-You understand hierarchy, spacing, typography, and clarity.
-
-IMPORTANT RULES:
-- Output ONLY valid JSON
-- Do NOT include markdown
-- Do NOT include explanations outside JSON
-- No em-dashes
-- Be concise but high quality
-`;
-
-    const userPrompt = `
-Create a professional design brief for a ${body.designType || "flyer"}.
-
-Constraints:
-- Location: Sacramento, CA (always)
-- Audience: ${body.audience || "all"}
-- Flyer fold: ${body.flyerFold || "single"}
-- Aspect: ${body.aspect || "a4"}
-
-Surprise rules:
-- surpriseContent: ${body.surpriseContent !== false}
-- surpriseDirection: ${body.surpriseDirection !== false}
-
-If surpriseContent is true, invent strong copy.
-If false, respect provided values unless empty.
-
-If surpriseDirection is true, choose tone, palette, imagery like a senior designer.
-
-Return this JSON shape EXACTLY:
-
-{
-  "designType": "flyer | newsletter",
-  "flyerFold": "single | bifold | trifold",
-  "aspect": "a4 | ig_story | ig_post | email_header | linkedin_banner",
-  "location": "Sacramento, CA",
-  "audience": "buyer | seller | realtor | all",
-  "headline": "",
-  "subhead": "",
-  "cta": "",
-  "dateTime": "",
-  "keyPoints": "",
-  "monthTheme": "",
-  "stats": "",
-  "tipOfTheMonth": "",
-  "tone": "premium_minimal | bold_modern | clean_corporate | warm_human | playful | luxury_editorial",
-  "density": "airy | balanced | packed",
-  "brandWords": "",
-  "palette": "",
-  "imageryPreference": "",
-  "doNotInclude": "",
-  "extraNotes": ""
-}
-`;
-
-    const response = await client.responses.create({
-      model: "gpt-4.1-mini",
-      input: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-    });
-
-    const text = response.output_text;
-
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
+    const ip = getIP(req);
+    const limit = 10;
+    const gate = takeDailyToken(ip, limit);
+    if (!gate.ok) {
       return Response.json(
-        { ok: false, error: "Model did not return valid JSON" },
-        { status: 500 }
+        { ok: false, error: "Daily brief limit reached (10/day). Try again tomorrow or lower brief usage." },
+        { status: 429 }
       );
     }
 
-    // Enforce locked value
-    parsed.location = "Sacramento, CA";
+    const body = await req.json();
 
-    return Response.json({ ok: true, brief: parsed });
+    // Minimal validation
+    const designType = body?.designType;
+    const format = body?.format;
+    const renderSize = body?.renderSize;
+    const location = body?.location || "Sacramento, CA";
+    const audience = body?.audience || "buyer";
+
+    if (!designType || !format || !renderSize?.width || !renderSize?.height) {
+      return Response.json({ ok: false, error: "Missing required fields." }, { status: 400 });
+    }
+
+    const system = `
+You are a highly-paid senior graphic designer specialized in flyers and newsletters.
+You surprise the user with smart choices while staying practical and printable.
+You must output VALID JSON ONLY (no markdown).
+
+Goals:
+- Create a strong design brief
+- Provide an image-generation prompt (for an image model)
+- Provide teach-you-why designer notes (hierarchy, typography, color logic, layout)
+- Keep copy punchy and scannable
+
+Constraints:
+- Location defaults to Sacramento, CA
+- Audience can be buyer/seller/realtor/all
+- If "surpriseCopy" true, you may rewrite headline/subhead/CTA to be better.
+- If "surpriseDesign" true, you may choose palette/imagery style that fits.
+- Avoid tiny text.
+- No em-dashes.
+`;
+
+    const user = JSON.stringify(body);
+
+    const completion = await client.chat.completions.create({
+      model: "gpt-4.1-mini",
+      temperature: 0.7,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+    });
+
+    const text = completion.choices?.[0]?.message?.content || "";
+    const brief = safeJsonParse(text);
+
+    // Attach recommended “other tools” links (you can change these anytime)
+    brief.alternativeGenerators = [
+      {
+        name: "Microsoft Designer (Image Creator)",
+        url: "https://designer.microsoft.com/",
+        note: "Often free with Microsoft account.",
+      },
+      {
+        name: "Adobe Firefly",
+        url: "https://firefly.adobe.com/",
+        note: "Has free credits depending on plan/account.",
+      },
+      {
+        name: "Canva AI Image Generator",
+        url: "https://www.canva.com/",
+        note: "Magic Media / AI tools available depending on plan.",
+      },
+      {
+        name: "Leonardo AI",
+        url: "https://leonardo.ai/",
+        note: "Has free tier options depending on account.",
+      },
+    ];
+
+    return Response.json({
+      ok: true,
+      remainingToday: gate.remaining,
+      brief,
+    });
   } catch (err: any) {
     return Response.json(
-      { ok: false, error: err?.message || "Unknown error" },
+      { ok: false, error: err?.message || "Brief error" },
       { status: 500 }
     );
   }
