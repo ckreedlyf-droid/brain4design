@@ -675,3 +675,60 @@ const cardStyle: React.CSSProperties = {
   background: "rgba(0,0,0,0.22)",
   padding: 12,
 };
+function ToggleRow(props: {
+  title: string;
+  desc: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  const { title, desc, checked, onChange } = props;
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        padding: 14,
+        borderRadius: 14,
+        border: "1px solid rgba(255,255,255,0.10)",
+        background: "rgba(255,255,255,0.04)",
+      }}
+    >
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontWeight: 800, marginBottom: 4 }}>{title}</div>
+        <div style={{ opacity: 0.8, fontSize: 13, lineHeight: 1.35 }}>{desc}</div>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => onChange(!checked)}
+        aria-pressed={checked}
+        style={{
+          flex: "0 0 auto",
+          width: 54,
+          height: 32,
+          borderRadius: 999,
+          border: "1px solid rgba(255,255,255,0.18)",
+          background: checked ? "rgba(99,102,241,0.9)" : "rgba(255,255,255,0.08)",
+          position: "relative",
+          cursor: "pointer",
+        }}
+      >
+        <span
+          style={{
+            position: "absolute",
+            top: 4,
+            left: checked ? 26 : 4,
+            width: 24,
+            height: 24,
+            borderRadius: 999,
+            background: "white",
+            transition: "left 120ms ease",
+          }}
+        />
+      </button>
+    </div>
+  );
+}
