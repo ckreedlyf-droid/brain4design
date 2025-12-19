@@ -19,6 +19,10 @@ type ApiErr = {
   cooldownSeconds?: number;
 };
 
+function isApiErr(x: ApiOk | ApiErr): x is ApiErr {
+  return x.ok === false;
+}
+
 export default function Home() {
   const [loading, setLoading] = useState(false);
   const [image, setImage] = useState<string | null>(null);
@@ -29,7 +33,10 @@ export default function Home() {
   const [cooldownLeft, setCooldownLeft] = useState<number>(0);
   const cooldownTimer = useRef<number | null>(null);
 
-  const [message, setMessage] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
+  const [message, setMessage] = useState<{
+    type: "success" | "error" | "info";
+    text: string;
+  } | null>(null);
 
   const disabled = loading || cooldownLeft > 0;
 
@@ -72,19 +79,20 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          prompt: "A modern minimalist flyer layout for a Sacramento real estate audience, bold headline, clean grid, high-contrast CTA, print-ready, professional",
+          prompt:
+            "A modern minimalist flyer layout for a Sacramento real estate audience. Bold headline, clean grid, high-contrast CTA, print-ready, professional.",
           size: "1024x1536",
         }),
       });
 
       const data = (await res.json()) as ApiOk | ApiErr;
 
-      if (!data.ok) {
-        // Update remaining if provided
-        if (typeof data.remainingToday === "number") setRemainingToday(data.remainingToday);
-        if (typeof data.dailyLimit === "number") setDailyLimit(data.dailyLimit);
+      // Update counters if present (both ok and err can include them)
+      if (typeof data.remainingToday === "number") setRemainingToday(data.remainingToday);
+      if (typeof data.dailyLimit === "number") setDailyLimit(data.dailyLimit);
 
-        // Cooldown errors return 429 + cooldownSeconds
+      if (isApiErr(data)) {
+        // Friendly messages
         if (data.code === "COOLDOWN" && typeof data.cooldownSeconds === "number") {
           startCooldown(data.cooldownSeconds);
           setMessage({ type: "info", text: data.error });
@@ -98,13 +106,10 @@ export default function Home() {
         return;
       }
 
-      // OK response
+      // OK
       setImage(`data:image/png;base64,${data.b64}`);
 
-      if (typeof data.remainingToday === "number") setRemainingToday(data.remainingToday);
-      if (typeof data.dailyLimit === "number") setDailyLimit(data.dailyLimit);
-
-      // Start cooldown after successful generation
+      // Start cooldown after success
       const cd = typeof data.cooldownSeconds === "number" ? data.cooldownSeconds : 60;
       startCooldown(cd);
 
@@ -176,9 +181,7 @@ export default function Home() {
               {statusLine}
             </div>
 
-            <div style={{ fontSize: 13, opacity: 0.75 }}>
-              Cooldown: 60s • Limit: 10/day per IP
-            </div>
+            <div style={{ fontSize: 13, opacity: 0.75 }}>Cooldown: 60s • Limit: 10/day per IP</div>
           </div>
 
           {message && (
@@ -212,7 +215,14 @@ export default function Home() {
                 background: "rgba(0,0,0,0.25)",
               }}
             >
-              <div style={{ padding: 10, borderBottom: "1px solid rgba(255,255,255,0.08)", fontSize: 13, opacity: 0.8 }}>
+              <div
+                style={{
+                  padding: 10,
+                  borderBottom: "1px solid rgba(255,255,255,0.08)",
+                  fontSize: 13,
+                  opacity: 0.8,
+                }}
+              >
                 Generated preview (PNG)
               </div>
               <div style={{ padding: 14 }}>
@@ -235,7 +245,7 @@ export default function Home() {
         </section>
 
         <footer style={{ marginTop: 14, opacity: 0.65, fontSize: 12 }}>
-          Tip: If you get “Daily limit reached”, you can still use the app UI, just avoid generating images until tomorrow.
+          Tip: If you hit “Daily limit reached”, use /api/brief only and generate images tomorrow.
         </footer>
       </div>
     </main>
