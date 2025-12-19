@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ---- in-memory rate limits (good for hobby/testing; resets on cold starts)
+// In-memory limits (OK for hobby/testing; resets on cold starts)
 const dailyCounts = new Map<string, { date: string; count: number }>();
 const lastHit = new Map<string, number>();
 
@@ -55,17 +55,19 @@ export async function POST(req: Request) {
   try {
     const ip = getIP(req);
 
-    // ---- Limits you can tune
+    // Limits
     const DAILY_LIMIT = 10; // images/day per IP
-    const COOLDOWN_MS = 30_000; // 30 seconds per image per IP
+    const COOLDOWN_MS = 60_000; // 60 seconds per image per IP
 
     const cool = checkCooldown(ip, COOLDOWN_MS);
     if (!cool.ok) {
       return Response.json(
         {
           ok: false,
-          error: `Cooldown active. Please wait ${Math.ceil(cool.waitMs / 1000)}s before generating again.`,
           code: "COOLDOWN",
+          error: `Cooldown active. Please wait ${Math.ceil(cool.waitMs / 1000)}s before generating again.`,
+          cooldownSeconds: Math.ceil(cool.waitMs / 1000),
+          dailyLimit: DAILY_LIMIT,
         },
         { status: 429 }
       );
@@ -76,33 +78,28 @@ export async function POST(req: Request) {
       return Response.json(
         {
           ok: false,
-          error: `Daily image limit reached (${DAILY_LIMIT}/day). Try again tomorrow.`,
           code: "DAILY_LIMIT",
+          error: `Daily image limit reached (${DAILY_LIMIT}/day). Try again tomorrow.`,
+          remainingToday: 0,
+          dailyLimit: DAILY_LIMIT,
         },
         { status: 429 }
       );
     }
 
     const body = await req.json();
-    const prompt = clampString(body?.prompt, 800); // prevent huge prompts
+    const prompt = clampString(body?.prompt, 800);
 
-    // Optional: size control (kept safe)
-    const size = clampString(body?.size || "1024x1024", 20);
+    // Optional size (safe allowlist)
+    const size = clampString(body?.size || "1024x1536", 20);
     const allowedSizes = new Set(["1024x1024", "1024x1536", "1536x1024"]);
-    const safeSize = allowedSizes.has(size) ? size : "1024x1024";
+    const safeSize = allowedSizes.has(size) ? size : "1024x1536";
 
     if (!prompt) {
-      return Response.json({ ok: false, error: "Missing prompt" }, { status: 400 });
+      return Response.json({ ok: false, code: "BAD_REQUEST", error: "Missing prompt." }, { status: 400 });
     }
 
-    console.log(
-      "[/api/generate] ip=",
-      ip,
-      "remainingToday=",
-      gate.remaining,
-      "size=",
-      safeSize
-    );
+    console.log("[/api/generate]", { ip, remainingToday: gate.remaining, size: safeSize });
 
     const result = await client.images.generate({
       model: "gpt-image-1",
@@ -112,16 +109,21 @@ export async function POST(req: Request) {
 
     const b64 = result.data?.[0]?.b64_json;
     if (!b64) {
-      return Response.json({ ok: false, error: "No image returned" }, { status: 500 });
+      return Response.json({ ok: false, code: "NO_IMAGE", error: "No image returned." }, { status: 500 });
     }
 
     return Response.json({
       ok: true,
-      remainingToday: gate.remaining,
       b64,
+      remainingToday: gate.remaining,
+      dailyLimit: DAILY_LIMIT,
+      cooldownSeconds: Math.ceil(COOLDOWN_MS / 1000),
     });
   } catch (err: any) {
     console.error("[/api/generate] error:", err?.message || err);
-    return Response.json({ ok: false, error: err?.message || "Failed to generate image" }, { status: 500 });
+    return Response.json(
+      { ok: false, code: "SERVER_ERROR", error: err?.message || "Failed to generate image." },
+      { status: 500 }
+    );
   }
 }
