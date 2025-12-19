@@ -3,62 +3,67 @@ import OpenAI from "openai";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// naive in-memory cache (works for hobby; resets on cold starts)
+const cache = new Map<string, { b64: string; ts: number }>();
+const lastCallByIP = new Map<string, number>();
+
+function getIP(req: Request) {
+  const xf = req.headers.get("x-forwarded-for");
+  if (xf) return xf.split(",")[0].trim();
+  return "unknown";
+}
+
+function keyFor(prompt: string, size: string) {
+  return `${size}::${prompt}`.slice(0, 2000);
+}
+
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
-    const prompt = body?.prompt;
+    const ip = getIP(req);
+
+    // Cooldown: 10 seconds between image calls per IP
+    const now = Date.now();
+    const last = lastCallByIP.get(ip) || 0;
+    if (now - last < 10_000) {
+      return Response.json({ ok: false, error: "Slow down: wait 10s between image generations." }, { status: 429 });
+    }
+    lastCallByIP.set(ip, now);
+
+    const { prompt, size } = await req.json();
 
     if (!prompt || typeof prompt !== "string") {
-      return Response.json(
-        { ok: false, error: "Missing prompt (string) in JSON body." },
-        { status: 400 }
-      );
+      return Response.json({ ok: false, error: "Missing prompt" }, { status: 400 });
     }
 
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      return Response.json(
-        { ok: false, error: "OPENAI_API_KEY is missing in server env vars." },
-        { status: 500 }
-      );
+    const finalSize = typeof size === "string" ? size : "1024x1024";
+    const k = keyFor(prompt, finalSize);
+
+    // cache valid for 10 minutes
+    const cached = cache.get(k);
+    if (cached && now - cached.ts < 10 * 60 * 1000) {
+      return Response.json({ ok: true, b64: cached.b64, cached: true });
     }
 
-    const client = new OpenAI({ apiKey });
+    // LOGGING (helps audit spend in Vercel logs)
+    console.log("[/api/generate] ip=", ip, "size=", finalSize, "promptChars=", prompt.length);
 
     const result = await client.images.generate({
       model: "gpt-image-1",
       prompt,
-      size: "1024x1024",
+      size: finalSize,
     });
 
-    const b64 = result?.data?.[0]?.b64_json;
-
+    const b64 = result.data?.[0]?.b64_json;
     if (!b64) {
-      return Response.json(
-        { ok: false, error: "No image returned from OpenAI.", raw: result },
-        { status: 502 }
-      );
+      return Response.json({ ok: false, error: "No image returned" }, { status: 500 });
     }
 
-    return Response.json({ ok: true, b64 });
+    cache.set(k, { b64, ts: now });
+    return Response.json({ ok: true, b64, cached: false });
   } catch (err: any) {
-    // This will show up in Vercel runtime logs
-    console.error("API /api/generate error:", err);
-
-    return Response.json(
-      {
-        ok: false,
-        error: err?.message || "Unknown server error",
-        name: err?.name,
-        status: err?.status,
-        code: err?.code,
-        type: err?.type,
-      },
-      { status: 500 }
-    );
+    console.error("[/api/generate] error:", err?.message || err);
+    return Response.json({ ok: false, error: err?.message || "Failed to generate image" }, { status: 500 });
   }
-}
-
-export async function GET() {
-  return Response.json({ ok: true, message: "Use POST /api/generate" });
 }
