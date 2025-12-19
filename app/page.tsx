@@ -2,217 +2,213 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-type AltGen = { name: string; url: string; note?: string };
-
-type BriefPayload = {
-  designType: "Flyer" | "Newsletter";
-  format: string;
-  flyerFold?: "Single" | "Bi-fold" | "Tri-fold";
-  renderSize: { width: number; height: number };
-  location: string;
-  audience: "buyer" | "seller" | "realtor" | "all";
-  surpriseCopy: boolean;
-  copy: {
-    headline?: string;
-    subhead?: string;
-    cta?: string;
-    dateTime?: string;
-    keyPoints?: string[];
-  };
-  surpriseDesign: boolean;
-  designDirection: {
-    tone: string;
-    density: string;
-    brandWords: string;
-    paletteHint: string;
-  };
+type BriefOk = {
+  ok: true;
+  remainingToday: number;
+  brief: Brief;
 };
 
-type BriefShape = {
-  prompt?: string;
-  copy?: { headline?: string; subhead?: string; cta?: string; dateTime?: string; keyPoints?: string[] };
-  designerNotes?: any;
-  alternativeGenerators?: AltGen[];
-};
-
-type BriefOk = { ok: true; remainingToday: number; brief: BriefShape };
 type BriefErr = {
   ok: false;
   error: string;
-  code?: "COOLDOWN" | "DAILY_LIMIT" | "BAD_REQUEST" | "SERVER_ERROR";
-  cooldownSeconds?: number;
   remainingToday?: number;
 };
 
+type Brief = {
+  mode: "brief" | "copy";
+  designType: "flyer" | "newsletter";
+  flyerFold: "single" | "bifold" | "trifold" | null;
+  format: string;
+  renderSize: { width: number; height: number };
+  location: string;
+  audience: "buyer" | "seller" | "realtor" | "all";
+
+  theme: {
+    seasonContext: string;
+    holidayReasoning: string[];
+    takeItOrLeaveItSuggestions: string[];
+  };
+
+  copy: {
+    headline: string;
+    subhead: string;
+    cta: string;
+    dateTime: string;
+    keyPoints: string[];
+  };
+
+  design: {
+    tone: string;
+    density: "minimal" | "balanced" | "dense";
+    palette: string;
+    imageryStyle: string;
+    layoutStyle: string;
+  };
+
+  // IMPORTANT: This is what enables Generate Image
+  prompt: string;
+
+  designerNotes: {
+    quickSummary: string;
+    doThis: string[];
+    avoidThis: string[];
+    hierarchy: string[];
+    spacingAndGrid: string[];
+    typography: string[];
+    colorLogic: string[];
+    imagery: string[];
+    foldAndPrintNotes: string[];
+    exportChecklist: string[];
+  };
+
+  promptTransparency: {
+    whatTheModelOptimizedFor: string[];
+    whyThisWorks: string[];
+    risksAndTradeoffs: string[];
+  };
+
+  alternativeGenerators?: { name: string; url: string; note?: string }[];
+};
+
 type GenOk = { ok: true; b64: string };
-type GenErr = { ok: false; error: string; code?: string };
+type GenErr = { ok: false; error: string };
 
 function isErr<T extends { ok: boolean }>(x: T): x is Extract<T, { ok: false }> {
   return x.ok === false;
 }
 
-function ToggleRow(props: {
-  title: string;
-  desc?: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  const { title, desc, checked, onChange } = props;
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return <div style={{ fontWeight: 900, marginBottom: 10, fontSize: 14 }}>{children}</div>;
+}
 
+function BulletList({ items }: { items: string[] }) {
+  if (!items?.length) return <div style={{ opacity: 0.7 }}>—</div>;
   return (
-    <div
-      style={{
-        display: "flex",
-        justifyContent: "space-between",
-        gap: 16,
-        padding: 12,
-        borderRadius: 14,
-        border: "1px solid rgba(255,255,255,0.10)",
-        background: "rgba(255,255,255,0.04)",
-        alignItems: "center",
-        marginTop: 10,
-      }}
-    >
-      <div>
-        <div style={{ fontWeight: 900, fontSize: 13 }}>{title}</div>
-        {desc ? <div style={{ opacity: 0.8, fontSize: 12, marginTop: 4, lineHeight: 1.35 }}>{desc}</div> : null}
-      </div>
-
-      <button
-        type="button"
-        onClick={() => onChange(!checked)}
-        style={{
-          width: 56,
-          height: 32,
-          borderRadius: 999,
-          border: "1px solid rgba(255,255,255,0.14)",
-          background: checked ? "rgba(99,102,241,0.85)" : "rgba(255,255,255,0.08)",
-          position: "relative",
-          cursor: "pointer",
-          flexShrink: 0,
-        }}
-        aria-pressed={checked}
-        title={checked ? "On" : "Off"}
-      >
-        <span
-          style={{
-            position: "absolute",
-            top: 4,
-            left: checked ? 28 : 4,
-            width: 24,
-            height: 24,
-            borderRadius: 999,
-            background: "rgba(255,255,255,0.92)",
-            transition: "left 160ms ease",
-          }}
-        />
-      </button>
-    </div>
+    <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.55 }}>
+      {items.map((x, i) => (
+        <li key={i} style={{ marginBottom: 6 }}>
+          {x}
+        </li>
+      ))}
+    </ul>
   );
 }
 
 export default function Home() {
-  // ---- brief form state
+  // ---- brief form state (UI-friendly)
   const [designType, setDesignType] = useState<"Flyer" | "Newsletter">("Flyer");
   const [format, setFormat] = useState<string>("A4 (print)");
   const [flyerFold, setFlyerFold] = useState<"Single" | "Bi-fold" | "Tri-fold">("Single");
   const [audience, setAudience] = useState<"buyer" | "seller" | "realtor" | "all">("buyer");
   const [location, setLocation] = useState<string>("Sacramento, CA");
 
+  // Content inputs
   const [surpriseCopy, setSurpriseCopy] = useState(true);
   const [headline, setHeadline] = useState("");
   const [subhead, setSubhead] = useState("");
   const [cta, setCta] = useState("");
   const [dateTime, setDateTime] = useState("");
-  const [keyPoints, setKeyPoints] = useState("");
+  const [keyPointsText, setKeyPointsText] = useState("• Short bullet\n• Short bullet\n• Short bullet");
 
+  // Design direction
   const [surpriseDesign, setSurpriseDesign] = useState(true);
   const [tone, setTone] = useState("Bold Modern");
-  const [density, setDensity] = useState("Balanced");
+  const [density, setDensity] = useState<"minimal" | "balanced" | "dense">("balanced");
   const [brandWords, setBrandWords] = useState("trustworthy, innovative, dedicated");
   const [paletteHint, setPaletteHint] = useState("teal + orange accents, clean modern");
+  const [imageryHint, setImageryHint] = useState("");
 
   // ---- outputs
   const [briefLoading, setBriefLoading] = useState(false);
+  const [copyLoading, setCopyLoading] = useState(false);
   const [briefRemaining, setBriefRemaining] = useState<number | null>(null);
-  const [briefData, setBriefData] = useState<BriefShape | null>(null);
+  const [briefData, setBriefData] = useState<Brief | null>(null);
 
   // ---- image generation
   const [genLoading, setGenLoading] = useState(false);
   const [image, setImage] = useState<string | null>(null);
 
-  // ---- cooldown handling (brief)
-  const [cooldownLeft, setCooldownLeft] = useState<number>(0);
-  const cooldownTimer = useRef<number | null>(null);
+  // ---- cooldown handling
+  const [briefCooldownLeft, setBriefCooldownLeft] = useState<number>(0); // 60s after Create Brief
+  const [copyCooldownLeft, setCopyCooldownLeft] = useState<number>(0); // 10s after Surprise Copy
+  const briefTimer = useRef<number | null>(null);
+  const copyTimer = useRef<number | null>(null);
 
   // ---- message
   const [message, setMessage] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
 
   const renderSize = useMemo(() => {
-    // Keep it simple for now: portrait outputs
+    // keep it simple
     if (format.includes("Social")) return { width: 1024, height: 1536 };
-    if (format.includes("US Letter")) return { width: 1024, height: 1536 };
     return { width: 1024, height: 1536 };
   }, [format]);
-
-  const sizeString = useMemo(() => `${renderSize.width}x${renderSize.height}`, [renderSize]);
-
-  const startCooldown = (seconds: number) => {
-    const s = Math.max(0, Math.floor(seconds || 0));
-    setCooldownLeft(s);
-
-    if (cooldownTimer.current) window.clearInterval(cooldownTimer.current);
-
-    if (s <= 0) return;
-
-    cooldownTimer.current = window.setInterval(() => {
-      setCooldownLeft((prev) => {
-        if (prev <= 1) {
-          if (cooldownTimer.current) window.clearInterval(cooldownTimer.current);
-          cooldownTimer.current = null;
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-  };
-
-  useEffect(() => {
-    return () => {
-      if (cooldownTimer.current) window.clearInterval(cooldownTimer.current);
-    };
-  }, []);
-
-  const briefDisabled = briefLoading || cooldownLeft > 0;
-  const canGenerateImage = !!briefData?.prompt && !genLoading;
 
   const statusLine = useMemo(() => {
     if (briefRemaining != null) return `Remaining today: ${briefRemaining}/10`;
     return "Remaining today: —";
   }, [briefRemaining]);
 
-  const buildPayload = (): BriefPayload => {
-    const keys = keyPoints
+  const keyPoints = useMemo(() => {
+    return keyPointsText
       .split("\n")
-      .map((s) => s.trim())
+      .map((s) => s.replace(/^•\s?/, "").trim())
       .filter(Boolean)
-      .slice(0, 5);
+      .slice(0, 6);
+  }, [keyPointsText]);
 
+  const startTimer = (kind: "brief" | "copy", seconds: number) => {
+    if (kind === "brief") {
+      setBriefCooldownLeft(seconds);
+      if (briefTimer.current) window.clearInterval(briefTimer.current);
+      briefTimer.current = window.setInterval(() => {
+        setBriefCooldownLeft((prev) => {
+          if (prev <= 1) {
+            if (briefTimer.current) window.clearInterval(briefTimer.current);
+            briefTimer.current = null;
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } else {
+      setCopyCooldownLeft(seconds);
+      if (copyTimer.current) window.clearInterval(copyTimer.current);
+      copyTimer.current = window.setInterval(() => {
+        setCopyCooldownLeft((prev) => {
+          if (prev <= 1) {
+            if (copyTimer.current) window.clearInterval(copyTimer.current);
+            copyTimer.current = null;
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (briefTimer.current) window.clearInterval(briefTimer.current);
+      if (copyTimer.current) window.clearInterval(copyTimer.current);
+    };
+  }, []);
+
+  const buildPayload = () => {
     return {
-      designType,
+      designType, // "Flyer" | "Newsletter" (API now accepts and normalizes)
       format,
       flyerFold: designType === "Flyer" ? flyerFold : undefined,
       renderSize,
-      location: location || "Sacramento, CA",
+      location,
       audience,
 
       surpriseCopy,
       copy: {
-        headline: headline.trim() || undefined,
-        subhead: subhead.trim() || undefined,
-        cta: cta.trim() || undefined,
-        dateTime: dateTime.trim() || undefined,
-        keyPoints: keys.length ? keys : undefined,
+        headline: headline || undefined,
+        subhead: subhead || undefined,
+        cta: cta || undefined,
+        dateTime: dateTime || undefined,
+        keyPoints: keyPoints.length ? keyPoints : undefined,
       },
 
       surpriseDesign,
@@ -221,67 +217,109 @@ export default function Home() {
         density,
         brandWords,
         paletteHint,
+        imageryHint,
       },
     };
   };
 
   const requestBrief = async () => {
+    if (briefLoading || briefCooldownLeft > 0) return;
     setBriefLoading(true);
     setMessage(null);
-    setBriefData(null);
     setImage(null);
 
     try {
       const res = await fetch("/api/brief", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildPayload()),
+        body: JSON.stringify({ mode: "brief", ...buildPayload() }),
       });
 
       const data = (await res.json()) as BriefOk | BriefErr;
 
-      // update remaining if present (both ok and err may include it)
-      if ("remainingToday" in data && typeof data.remainingToday === "number") {
-        setBriefRemaining(data.remainingToday);
-      }
+      if (typeof (data as any).remainingToday === "number") setBriefRemaining((data as any).remainingToday);
 
       if (isErr(data)) {
-        // Friendly messages
-        if (data.code === "COOLDOWN") {
-          const secs = typeof data.cooldownSeconds === "number" ? data.cooldownSeconds : 60;
-          startCooldown(secs);
-          setMessage({ type: "info", text: data.error || `Cooldown active. Try again in ${secs}s.` });
-          return;
-        }
-
-        if (data.code === "DAILY_LIMIT" || res.status === 429) {
-          setMessage({
-            type: "error",
-            text:
-              data.error ||
-              "Daily brief limit reached (10/day). Try again tomorrow, or reuse the same prompt with other generators below.",
-          });
-          return;
-        }
-
-        setMessage({ type: "error", text: data.error || "Brief failed. Please try again." });
+        setMessage({ type: "error", text: data.error || "Brief failed." });
         return;
       }
 
-      setBriefRemaining(data.remainingToday);
       setBriefData(data.brief);
+      setBriefRemaining(data.remainingToday);
 
-      setMessage({
-        type: "success",
-        text: "Brief ready. Review the prompt and notes. Generate an image only when the direction looks correct.",
-      });
+      // Fill your inputs with refined copy (optional, but feels “smart”)
+      if (data.brief?.copy) {
+        setHeadline(data.brief.copy.headline || "");
+        setSubhead(data.brief.copy.subhead || "");
+        setCta(data.brief.copy.cta || "");
+        setDateTime(data.brief.copy.dateTime || "");
+        if (data.brief.copy.keyPoints?.length) setKeyPointsText(data.brief.copy.keyPoints.map((k) => `• ${k}`).join("\n"));
+      }
 
-      // UI cooldown: always 60s after brief call (even if backend doesn't enforce)
-      startCooldown(60);
+      setMessage({ type: "success", text: "Brief ready. Review the theme + notes. Then generate an image when you're happy." });
+      startTimer("brief", 60);
     } catch (e: any) {
       setMessage({ type: "error", text: e?.message || "Network error while creating brief." });
     } finally {
       setBriefLoading(false);
+    }
+  };
+
+  // Surprise Copy: cheap + short cooldown + does NOT regenerate everything
+  const requestSurpriseCopy = async () => {
+    if (!surpriseCopy) {
+      setMessage({ type: "info", text: "Turn ON Surprise Copy first, then click Surprise Copy (10s)." });
+      return;
+    }
+    if (copyLoading || copyCooldownLeft > 0) return;
+
+    setCopyLoading(true);
+    setMessage(null);
+
+    try {
+      const res = await fetch("/api/brief", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "copy", ...buildPayload() }),
+      });
+
+      const data = (await res.json()) as BriefOk | BriefErr;
+
+      if (typeof (data as any).remainingToday === "number") setBriefRemaining((data as any).remainingToday);
+
+      if (isErr(data)) {
+        setMessage({ type: "error", text: data.error || "Copy refresh failed." });
+        return;
+      }
+
+      // Merge: keep existing prompt/design if present, but overwrite theme+copy+notes
+      setBriefData((prev) => {
+        const base = prev ?? data.brief;
+        return {
+          ...base,
+          theme: data.brief.theme,
+          copy: data.brief.copy,
+          designerNotes: data.brief.designerNotes,
+          promptTransparency: data.brief.promptTransparency,
+          // Keep prompt stable if you already had it (or take new)
+          prompt: base?.prompt || data.brief.prompt,
+          design: base?.design || data.brief.design,
+        };
+      });
+
+      // Update form fields with refined copy
+      setHeadline(data.brief.copy.headline || "");
+      setSubhead(data.brief.copy.subhead || "");
+      setCta(data.brief.copy.cta || "");
+      setDateTime(data.brief.copy.dateTime || "");
+      if (data.brief.copy.keyPoints?.length) setKeyPointsText(data.brief.copy.keyPoints.map((k) => `• ${k}`).join("\n"));
+
+      setMessage({ type: "success", text: "Surprise Copy updated. Take it or leave it. Now you can generate image whenever ready." });
+      startTimer("copy", 10);
+    } catch (e: any) {
+      setMessage({ type: "error", text: e?.message || "Network error while refining copy." });
+    } finally {
+      setCopyLoading(false);
     }
   };
 
@@ -301,31 +339,29 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt: briefData.prompt,
-          size: sizeString, // must match allowed sizes in your route.ts
+          size: `${renderSize.width}x${renderSize.height}`,
         }),
       });
 
       const data = (await res.json()) as GenOk | GenErr;
 
-      if (isErr(data)) {
-        setMessage({
-          type: "error",
-          text: data.error || "Failed to generate image.",
-        });
+      if (isErr(data as any)) {
+        setMessage({ type: "error", text: (data as any).error || "Failed to generate image." });
         return;
       }
 
-      setImage(`data:image/png;base64,${data.b64}`);
-      setMessage({
-        type: "success",
-        text: "Image generated. Pro tip: iterate the brief (cheap) several times before generating again (expensive).",
-      });
+      setImage(`data:image/png;base64,${(data as GenOk).b64}`);
+      setMessage({ type: "success", text: "Image generated. Next: iterate brief/copy (cheap) before spending again." });
     } catch (e: any) {
       setMessage({ type: "error", text: e?.message || "Network error while generating image." });
     } finally {
       setGenLoading(false);
     }
   };
+
+  const briefDisabled = briefLoading || briefCooldownLeft > 0;
+  const copyDisabled = copyLoading || copyCooldownLeft > 0 || !surpriseCopy;
+  const canGenerateImage = !!briefData?.prompt && !genLoading;
 
   return (
     <main
@@ -341,12 +377,12 @@ export default function Home() {
       <div style={{ maxWidth: 1180, margin: "0 auto" }}>
         <header style={{ marginBottom: 14 }}>
           <h1 style={{ margin: 0, fontSize: 40, letterSpacing: -0.5 }}>Brain4Design</h1>
-          <p style={{ marginTop: 10, marginBottom: 0, opacity: 0.85, lineHeight: 1.4 }}>
-            Brief-first workflow (cheap), then image generation (costly) only after the “high-paid designer brain” chooses the direction.
+          <p style={{ marginTop: 10, marginBottom: 0, opacity: 0.85 }}>
+            Brief-first workflow (cheap), then image generation (costly) only after the “highest-paid designer brain” chooses the direction.
           </p>
         </header>
 
-        {/* TOP BAR (brief-first) */}
+        {/* TOP BAR */}
         <section
           style={{
             display: "flex",
@@ -360,99 +396,37 @@ export default function Home() {
             marginBottom: 14,
           }}
         >
-          <button
-            onClick={requestBrief}
-            disabled={briefDisabled}
-            style={{
-              borderRadius: 12,
-              border: "1px solid rgba(255,255,255,0.14)",
-              background: briefDisabled ? "rgba(255,255,255,0.06)" : "rgba(120,140,255,0.20)",
-              color: "#e7ecff",
-              padding: "10px 14px",
-              fontWeight: 900,
-              cursor: briefDisabled ? "not-allowed" : "pointer",
-            }}
-            title="Create a brief (cheap step)"
-          >
-            {briefLoading ? "Creating brief..." : cooldownLeft > 0 ? `Cooldown (${cooldownLeft}s)` : "Create Brief (cheap)"}
+          <button onClick={requestBrief} disabled={briefDisabled} style={btnStyle(briefDisabled, "primary")}>
+            {briefLoading ? "Creating brief..." : briefCooldownLeft > 0 ? `Brief cooldown (${briefCooldownLeft}s)` : "Create Brief (cheap)"}
           </button>
 
-          <button
-            onClick={generateImage}
-            disabled={!canGenerateImage}
-            style={{
-              borderRadius: 12,
-              border: "1px solid rgba(255,255,255,0.14)",
-              background: !canGenerateImage ? "rgba(255,255,255,0.06)" : "rgba(80,200,140,0.18)",
-              color: "#e7ecff",
-              padding: "10px 14px",
-              fontWeight: 900,
-              cursor: !canGenerateImage ? "not-allowed" : "pointer",
-              opacity: !canGenerateImage ? 0.6 : 1,
-            }}
-            title={!briefData?.prompt ? "Create a brief first" : "Generate an image using the brief prompt (spend)"}
-          >
-            {genLoading ? "Generating..." : "Generate Image (spend)"}
+          <button onClick={requestSurpriseCopy} disabled={copyDisabled} style={btnStyle(copyDisabled, "secondary")}>
+            {copyLoading ? "Refreshing copy..." : copyCooldownLeft > 0 ? `Surprise Copy cooldown (${copyCooldownLeft}s)` : "Surprise Copy (10s)"}
           </button>
 
-          <div
-            style={{
-              padding: "8px 10px",
-              borderRadius: 12,
-              border: "1px solid rgba(255,255,255,0.10)",
-              background: "rgba(0,0,0,0.25)",
-              fontSize: 13,
-              opacity: 0.9,
-            }}
-          >
-            {statusLine}
-          </div>
+          <button onClick={generateImage} disabled={!canGenerateImage} style={btnStyle(!canGenerateImage, "green")} title={!briefData?.prompt ? "Create a brief first" : "Generate an image using the brief prompt"}>
+            {genLoading ? "Generating image..." : "Generate Image (spend)"}
+          </button>
+
+          <div style={pillStyle}>{statusLine}</div>
 
           <div style={{ fontSize: 13, opacity: 0.7 }}>
-            Brief limit: 10/day per IP • UI cooldown: 60s • Image calls are the expensive part
+            Brief limit: 10/day per IP • Brief cooldown: 60s • Surprise Copy cooldown: 10s • Image calls are the expensive part
           </div>
         </section>
 
         {message && (
-          <div
-            style={{
-              borderRadius: 16,
-              padding: "12px 14px",
-              border: "1px solid rgba(255,255,255,0.10)",
-              background:
-                message.type === "success"
-                  ? "rgba(80,200,140,0.12)"
-                  : message.type === "info"
-                  ? "rgba(120,140,255,0.12)"
-                  : "rgba(255,120,120,0.12)",
-              marginBottom: 14,
-            }}
-          >
-            <div style={{ fontWeight: 900, marginBottom: 4 }}>
-              {message.type === "success" ? "Success" : message.type === "info" ? "Heads up" : "Error"}
-            </div>
-            <div style={{ opacity: 0.92, lineHeight: 1.4 }}>{message.text}</div>
+          <div style={alertStyle(message.type)}>
+            <div style={{ fontWeight: 900, marginBottom: 4 }}>{message.type === "success" ? "Success" : message.type === "info" ? "Heads up" : "Error"}</div>
+            <div style={{ opacity: 0.92, lineHeight: 1.45 }}>{message.text}</div>
           </div>
         )}
 
         {/* MAIN GRID */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "420px 1fr",
-            gap: 14,
-          }}
-        >
+        <div style={{ display: "grid", gridTemplateColumns: "420px 1fr", gap: 14 }}>
           {/* LEFT: BRIEF FORM */}
-          <section
-            style={{
-              background: "rgba(255,255,255,0.04)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              borderRadius: 16,
-              padding: 14,
-            }}
-          >
-            <div style={{ fontWeight: 900, marginBottom: 10 }}>Brief Builder</div>
+          <section style={panelStyle}>
+            <SectionTitle>Brief Builder</SectionTitle>
 
             <label style={labelStyle}>Design type</label>
             <select value={designType} onChange={(e) => setDesignType(e.target.value as any)} style={selectStyle}>
@@ -495,13 +469,13 @@ export default function Home() {
               </div>
             </div>
 
-            <div style={{ height: 12 }} />
+            <div style={{ height: 14 }} />
 
-            <div style={{ fontWeight: 900, marginBottom: 8 }}>Content</div>
+            <SectionTitle>Content</SectionTitle>
 
             <ToggleRow
-              title="Surprise me with the best headline/subhead/CTA"
-              desc="When ON, the designer brain will refine your copy before generating."
+              title="Surprise me with the best headline/subhead/CTA + theme"
+              desc="When ON, use seasonal context + audience intent to rewrite your copy. Then click Surprise Copy (10s)."
               checked={surpriseCopy}
               onChange={setSurpriseCopy}
             />
@@ -518,20 +492,16 @@ export default function Home() {
             <label style={labelStyle}>Date/Time (optional)</label>
             <input value={dateTime} onChange={(e) => setDateTime(e.target.value)} style={inputStyle} placeholder="e.g., Sat 2PM" />
 
-            <label style={labelStyle}>Key points (max 5, one per line)</label>
-            <textarea
-              value={keyPoints}
-              onChange={(e) => setKeyPoints(e.target.value)}
-              style={{ ...inputStyle, minHeight: 90, resize: "vertical" }}
-              placeholder={"• Short bullet\n• Short bullet\n• Short bullet"}
-            />
+            <label style={labelStyle}>Key points (max 6, one per line)</label>
+            <textarea value={keyPointsText} onChange={(e) => setKeyPointsText(e.target.value)} style={{ ...inputStyle, minHeight: 90, resize: "vertical" }} />
 
-            <div style={{ height: 12 }} />
-            <div style={{ fontWeight: 900, marginBottom: 8 }}>Design direction</div>
+            <div style={{ height: 14 }} />
+
+            <SectionTitle>Design direction</SectionTitle>
 
             <ToggleRow
               title="Surprise me with pro design choices"
-              desc="When ON, the designer brain picks palette, imagery style, spacing, and hierarchy."
+              desc="When ON, the designer picks palette, spacing, hierarchy, and imagery style."
               checked={surpriseDesign}
               onChange={setSurpriseDesign}
             />
@@ -548,10 +518,10 @@ export default function Home() {
               </div>
               <div>
                 <label style={labelStyle}>Density</label>
-                <select value={density} onChange={(e) => setDensity(e.target.value)} style={selectStyle}>
-                  <option>Airy</option>
-                  <option>Balanced</option>
-                  <option>Dense</option>
+                <select value={density} onChange={(e) => setDensity(e.target.value as any)} style={selectStyle}>
+                  <option value="minimal">minimal</option>
+                  <option value="balanced">balanced</option>
+                  <option value="dense">dense</option>
                 </select>
               </div>
             </div>
@@ -562,126 +532,170 @@ export default function Home() {
             <label style={labelStyle}>Palette hint</label>
             <input value={paletteHint} onChange={(e) => setPaletteHint(e.target.value)} style={inputStyle} />
 
-            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 12 }}>
+            <label style={labelStyle}>Imagery hint (optional)</label>
+            <input value={imageryHint} onChange={(e) => setImageryHint(e.target.value)} style={inputStyle} placeholder="e.g. cozy holiday photo, modern icons, abstract shapes" />
+
+            <div style={{ fontSize: 12, opacity: 0.65, marginTop: 10 }}>
               Render size: {renderSize.width}x{renderSize.height}
             </div>
           </section>
 
           {/* RIGHT: OUTPUT */}
-          <section
-            style={{
-              background: "rgba(255,255,255,0.04)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              borderRadius: 16,
-              padding: 14,
-              minHeight: 520,
-            }}
-          >
-            <div style={{ fontWeight: 900, marginBottom: 10 }}>Designer Brain Output</div>
+          <section style={{ ...panelStyle, minHeight: 620 }}>
+            <SectionTitle>Designer Brain Output</SectionTitle>
 
             {!briefData ? (
-              <div style={{ opacity: 0.78, lineHeight: 1.6 }}>
+              <div style={{ opacity: 0.75, lineHeight: 1.65 }}>
                 Start here: click <b>Create Brief (cheap)</b>.
                 <br />
-                When the prompt and notes look right, then generate an image.
+                If Surprise Copy is ON, click <b>Surprise Copy (10s)</b> to rewrite headline/subhead/CTA + theme.
+                <br />
+                When prompt + notes look right, generate an image.
               </div>
             ) : (
               <div style={{ display: "grid", gridTemplateColumns: image ? "1fr 360px" : "1fr", gap: 14 }}>
                 <div>
-                  <div style={{ fontWeight: 900, marginBottom: 6 }}>Image prompt (transparent)</div>
-                  <textarea
-                    value={briefData.prompt || ""}
-                    readOnly
-                    style={{
-                      ...inputStyle,
-                      minHeight: 150,
-                      resize: "vertical",
-                      fontFamily:
-                        "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-                      fontSize: 12,
-                      opacity: 0.95,
-                    }}
-                  />
+                  {/* THEME */}
+                  <div style={cardStyle}>
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>Theme and season context</div>
+                    <div style={{ opacity: 0.9 }}>
+                      <b>{briefData.theme?.seasonContext || "—"}</b>
+                    </div>
+                    <div style={{ height: 8 }} />
+                    <div style={{ fontSize: 13, opacity: 0.9 }}>
+                      <b>Reasoning</b>
+                      <div style={{ height: 6 }} />
+                      <BulletList items={briefData.theme?.holidayReasoning || []} />
+                    </div>
+                    <div style={{ height: 10 }} />
+                    <div style={{ fontSize: 13, opacity: 0.9 }}>
+                      <b>Take it or leave it</b>
+                      <div style={{ height: 6 }} />
+                      <BulletList items={briefData.theme?.takeItOrLeaveItSuggestions || []} />
+                    </div>
+                  </div>
 
-                  <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                    <div>
-                      <div style={{ fontWeight: 900, marginBottom: 6 }}>Refined copy</div>
-                      <div style={cardStyle}>
-                        <div style={{ fontSize: 12, opacity: 0.7 }}>Headline</div>
-                        <div style={{ fontWeight: 900 }}>{briefData.copy?.headline || "—"}</div>
-                        <div style={{ height: 8 }} />
-                        <div style={{ fontSize: 12, opacity: 0.7 }}>Subhead</div>
-                        <div style={{ lineHeight: 1.35 }}>{briefData.copy?.subhead || "—"}</div>
-                        <div style={{ height: 8 }} />
-                        <div style={{ fontSize: 12, opacity: 0.7 }}>CTA</div>
-                        <div style={{ fontWeight: 800 }}>{briefData.copy?.cta || "—"}</div>
+                  {/* PROMPT */}
+                  <div style={{ height: 12 }} />
+                  <div style={cardStyle}>
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>Image prompt (ready to use)</div>
+                    <textarea
+                      value={briefData.prompt || ""}
+                      readOnly
+                      style={{
+                        ...inputStyle,
+                        minHeight: 150,
+                        resize: "vertical",
+                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+                        fontSize: 12,
+                        opacity: 0.95,
+                      }}
+                    />
+                    <div style={{ fontSize: 12, opacity: 0.7, marginTop: 8 }}>
+                      If Generate Image is disabled, it means prompt is empty. This build makes sure prompt is always returned.
+                    </div>
+                  </div>
+
+                  {/* NOTES */}
+                  <div style={{ height: 12 }} />
+                  <div style={cardStyle}>
+                    <div style={{ fontWeight: 900, marginBottom: 8 }}>Designer notes (editor-friendly)</div>
+
+                    <div style={{ fontSize: 13, opacity: 0.95, marginBottom: 10 }}>
+                      <b>Quick summary:</b> {briefData.designerNotes?.quickSummary || "—"}
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                      <div>
+                        <div style={{ fontWeight: 900, marginBottom: 6 }}>Do this</div>
+                        <BulletList items={briefData.designerNotes?.doThis || []} />
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 900, marginBottom: 6 }}>Avoid this</div>
+                        <BulletList items={briefData.designerNotes?.avoidThis || []} />
                       </div>
                     </div>
 
-                    <div>
-                      <div style={{ fontWeight: 900, marginBottom: 6 }}>Designer notes</div>
-                      <div style={cardStyle}>
-                        <pre
-                          style={{
-                            margin: 0,
-                            whiteSpace: "pre-wrap",
-                            wordBreak: "break-word",
-                            fontSize: 12,
-                            lineHeight: 1.5,
-                            opacity: 0.95,
-                          }}
-                        >
-                          {JSON.stringify(briefData.designerNotes ?? {}, null, 2)}
-                        </pre>
+                    <div style={{ height: 12 }} />
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>Hierarchy</div>
+                    <BulletList items={briefData.designerNotes?.hierarchy || []} />
+
+                    <div style={{ height: 12 }} />
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>Spacing and grid</div>
+                    <BulletList items={briefData.designerNotes?.spacingAndGrid || []} />
+
+                    <div style={{ height: 12 }} />
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>Typography</div>
+                    <BulletList items={briefData.designerNotes?.typography || []} />
+
+                    <div style={{ height: 12 }} />
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>Color logic</div>
+                    <BulletList items={briefData.designerNotes?.colorLogic || []} />
+
+                    <div style={{ height: 12 }} />
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>Imagery guidance</div>
+                    <BulletList items={briefData.designerNotes?.imagery || []} />
+
+                    <div style={{ height: 12 }} />
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>Fold and print notes</div>
+                    <BulletList items={briefData.designerNotes?.foldAndPrintNotes || []} />
+
+                    <div style={{ height: 12 }} />
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>Export checklist</div>
+                    <BulletList items={briefData.designerNotes?.exportChecklist || []} />
+                  </div>
+
+                  {/* PROMPT TRANSPARENCY */}
+                  <div style={{ height: 12 }} />
+                  <div style={cardStyle}>
+                    <div style={{ fontWeight: 900, marginBottom: 8 }}>Prompt transparency</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+                      <div>
+                        <div style={{ fontWeight: 900, marginBottom: 6 }}>Optimized for</div>
+                        <BulletList items={briefData.promptTransparency?.whatTheModelOptimizedFor || []} />
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 900, marginBottom: 6 }}>Why it works</div>
+                        <BulletList items={briefData.promptTransparency?.whyThisWorks || []} />
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 900, marginBottom: 6 }}>Risks and tradeoffs</div>
+                        <BulletList items={briefData.promptTransparency?.risksAndTradeoffs || []} />
                       </div>
                     </div>
                   </div>
 
                   {briefData.alternativeGenerators?.length ? (
-                    <div style={{ marginTop: 12 }}>
-                      <div style={{ fontWeight: 900, marginBottom: 6 }}>Try other generators (optional)</div>
+                    <>
+                      <div style={{ height: 12 }} />
                       <div style={cardStyle}>
+                        <div style={{ fontWeight: 900, marginBottom: 8 }}>Try other generators (optional)</div>
                         {briefData.alternativeGenerators.map((g, idx) => (
                           <div
-                            key={`${g.name}-${idx}`}
+                            key={idx}
                             style={{
-                              padding: "8px 0",
-                              borderBottom:
-                                idx === briefData.alternativeGenerators!.length - 1
-                                  ? "none"
-                                  : "1px solid rgba(255,255,255,0.08)",
+                              padding: "10px 0",
+                              borderBottom: idx === briefData.alternativeGenerators!.length - 1 ? "none" : "1px solid rgba(255,255,255,0.08)",
                             }}
                           >
                             <div style={{ fontWeight: 900 }}>{g.name}</div>
-                            {g.note ? <div style={{ fontSize: 12, opacity: 0.75 }}>{g.note}</div> : null}
-                            <div style={{ fontSize: 12, opacity: 0.9, marginTop: 4 }}>{g.url}</div>
+                            <div style={{ fontSize: 12, opacity: 0.75 }}>{g.note || ""}</div>
+                            <div style={{ fontSize: 12, opacity: 0.92, marginTop: 4 }}>{g.url}</div>
                           </div>
                         ))}
                       </div>
-                    </div>
+                    </>
                   ) : null}
                 </div>
 
                 {image && (
                   <div>
                     <div style={{ fontWeight: 900, marginBottom: 6 }}>Generated image</div>
-                    <div
-                      style={{
-                        borderRadius: 14,
-                        border: "1px solid rgba(255,255,255,0.10)",
-                        overflow: "hidden",
-                        background: "rgba(0,0,0,0.25)",
-                      }}
-                    >
-                      <img
-                        src={image}
-                        alt="Generated design"
-                        style={{ width: "100%", height: "auto", display: "block", background: "#fff" }}
-                      />
+                    <div style={{ borderRadius: 14, border: "1px solid rgba(255,255,255,0.10)", overflow: "hidden", background: "rgba(0,0,0,0.25)" }}>
+                      <img src={image} alt="Generated design" style={{ width: "100%", height: "auto", display: "block", background: "#fff" }} />
                     </div>
-
-                    <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75, lineHeight: 1.5 }}>
-                      Tip: iterate the brief multiple times (cheap) before generating another image (costly).
+                    <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7, lineHeight: 1.5 }}>
+                      Tip: iterate the brief/copy multiple times (cheap) before generating another image (costly).
                     </div>
                   </div>
                 )}
@@ -689,26 +703,70 @@ export default function Home() {
             )}
           </section>
         </div>
-
-        <div style={{ marginTop: 14, fontSize: 12, opacity: 0.65 }}>
-          Note: Brief calls are capped at 10/day per IP to control spend. The goal is to teach users through prompt transparency and designer notes.
-        </div>
       </div>
-
-      {/* small responsive tweak */}
-      <style jsx>{`
-        @media (max-width: 980px) {
-          main > div > div {
-            max-width: 100% !important;
-          }
-          main div[style*="grid-template-columns: 420px 1fr"] {
-            grid-template-columns: 1fr !important;
-          }
-        }
-      `}</style>
     </main>
   );
 }
+
+function ToggleRow(props: { title: string; desc?: string; checked: boolean; onChange: (v: boolean) => void }) {
+  const { title, desc, checked, onChange } = props;
+  return (
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        gap: 16,
+        padding: 14,
+        borderRadius: 14,
+        border: "1px solid rgba(255,255,255,0.10)",
+        background: "rgba(255,255,255,0.04)",
+        alignItems: "center",
+        marginBottom: 10,
+      }}
+    >
+      <div>
+        <div style={{ fontWeight: 900 }}>{title}</div>
+        {desc ? <div style={{ opacity: 0.8, fontSize: 12.5, marginTop: 4, lineHeight: 1.4 }}>{desc}</div> : null}
+      </div>
+
+      <button
+        type="button"
+        onClick={() => onChange(!checked)}
+        style={{
+          width: 56,
+          height: 32,
+          borderRadius: 999,
+          border: "1px solid rgba(255,255,255,0.14)",
+          background: checked ? "rgba(99,102,241,0.85)" : "rgba(255,255,255,0.08)",
+          position: "relative",
+          cursor: "pointer",
+          flexShrink: 0,
+        }}
+        aria-pressed={checked}
+      >
+        <span
+          style={{
+            position: "absolute",
+            top: 4,
+            left: checked ? 28 : 4,
+            width: 24,
+            height: 24,
+            borderRadius: 999,
+            background: "rgba(255,255,255,0.92)",
+            transition: "left 160ms ease",
+          }}
+        />
+      </button>
+    </div>
+  );
+}
+
+const panelStyle: React.CSSProperties = {
+  background: "rgba(255,255,255,0.04)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  borderRadius: 16,
+  padding: 14,
+};
 
 const labelStyle: React.CSSProperties = {
   display: "block",
@@ -739,3 +797,40 @@ const cardStyle: React.CSSProperties = {
   background: "rgba(0,0,0,0.22)",
   padding: 12,
 };
+
+function btnStyle(disabled: boolean, variant: "primary" | "secondary" | "green") {
+  const base: React.CSSProperties = {
+    borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.14)",
+    color: "#e7ecff",
+    padding: "10px 14px",
+    fontWeight: 900,
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.6 : 1,
+  };
+
+  if (variant === "primary") return { ...base, background: disabled ? "rgba(255,255,255,0.06)" : "rgba(120,140,255,0.20)" };
+  if (variant === "secondary") return { ...base, background: disabled ? "rgba(255,255,255,0.06)" : "rgba(180,160,255,0.16)" };
+  return { ...base, background: disabled ? "rgba(255,255,255,0.06)" : "rgba(80,200,140,0.18)" };
+}
+
+const pillStyle: React.CSSProperties = {
+  padding: "8px 10px",
+  borderRadius: 12,
+  border: "1px solid rgba(255,255,255,0.10)",
+  background: "rgba(0,0,0,0.25)",
+  fontSize: 13,
+  opacity: 0.9,
+};
+
+function alertStyle(type: "success" | "error" | "info"): React.CSSProperties {
+  const bg =
+    type === "success" ? "rgba(80,200,140,0.12)" : type === "info" ? "rgba(120,140,255,0.12)" : "rgba(255,120,120,0.12)";
+  return {
+    borderRadius: 16,
+    padding: "12px 14px",
+    border: "1px solid rgba(255,255,255,0.10)",
+    background: bg,
+    marginBottom: 14,
+  };
+}
