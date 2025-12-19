@@ -7,28 +7,33 @@ export default function Home() {
   const [image, setImage] = useState<string | null>(null);
 
   const generate = async () => {
-    setLoading(true);
-    setImage(null);
+    try {
+      setLoading(true);
+      setImage(null);
 
-    const res = await fetch("/api/generate", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        prompt: "A modern minimalist logo design",
-      }),
-    });
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          prompt: "A modern minimalist logo design",
+        }),
+      });
 
-    const data = await res.json();
+      const data = await res.json();
 
-    if (data.ok) {
+      if (!res.ok || !data?.b64) {
+        throw new Error(data?.error || "Failed to generate image");
+      }
+
+      // IMPORTANT: base64 must be prefixed with data:image
       setImage(`data:image/png;base64,${data.b64}`);
-    } else {
-      alert(data.error || "Something went wrong");
+    } catch (err: any) {
+      alert(err.message || "Something went wrong");
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   };
 
   return (
@@ -42,7 +47,15 @@ export default function Home() {
 
       {image && (
         <div style={{ marginTop: 20 }}>
-          <img src={image} alt="Generated design" width={400} />
+          <img
+            src={image}
+            alt="Generated design"
+            style={{
+              maxWidth: 512,
+              border: "1px solid #ddd",
+              borderRadius: 8,
+            }}
+          />
         </div>
       )}
     </main>
