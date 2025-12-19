@@ -1,3 +1,5 @@
+import "./globals.css";
+
 export const metadata = {
   title: "Brain4Design",
   description: "Flyer + Newsletter idea generator"
